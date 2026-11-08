@@ -1,0 +1,32 @@
+name: nurnama
+description: নূরনামা - নামাজের সময়, আজান, ক্যালেন্ডার ও রমজান সূচি
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  adhan: ^2.0.0+1
+  hijri: ^3.0.0
+  geolocator: ^12.0.0
+  flutter_local_notifications: ^17.2.4
+  timezone: ^0.9.4
+  shared_preferences: ^2.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon.png"
+  adaptive_icon_background: "#0B3D2E"
+  adaptive_icon_foreground: "assets/icon_fg.png"
