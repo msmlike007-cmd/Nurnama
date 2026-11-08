@@ -241,7 +241,7 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      final pos = await Geolocator.getCurrentPosition(
+      final pos = desiredAccuracy: LocationAccuracy.low, timeLimit: const Duration(seconds: 25));
           locationSettings: const LocationSettings(accuracy: LocationAccuracy.low, timeLimit: Duration(seconds: 25)));
       if (pos.latitude < 20.5 || pos.latitude > 26.7 || pos.longitude < 88.0 || pos.longitude > 92.8) {
         note = 'আপনি বাংলাদেশের বাইরে আছেন, সেটিংসে জেলা বেছে নিন';
