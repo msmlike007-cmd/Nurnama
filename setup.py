@@ -47,7 +47,7 @@ mf = 'android/app/src/main/AndroidManifest.xml'
 s = open(mf, encoding='utf8').read()
 perms = ''.join('<uses-permission android:name="android.permission.%s"/>\n' % p for p in [
     'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION', 'POST_NOTIFICATIONS', 'SCHEDULE_EXACT_ALARM',
-    'USE_EXACT_ALARM', 'RECEIVE_BOOT_COMPLETED', 'VIBRATE', 'WAKE_LOCK'])
+    'USE_EXACT_ALARM', 'RECEIVE_BOOT_COMPLETED', 'VIBRATE', 'WAKE_LOCK', 'INTERNET', 'ACCESS_NETWORK_STATE'])
 s = re.sub(r'(<manifest[^>]*>)', lambda m: m.group(1) + '\n' + perms, s, count=1)
 recv = '''
 <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>
@@ -61,6 +61,7 @@ recv = '''
 </receiver>
 '''
 s = s.replace('</application>', recv + '</application>', 1)
+s = s.replace('<application', '<queries><intent><action android:name="android.intent.action.VIEW"/><data android:scheme="https"/></intent></queries>\n<application', 1)
 s = re.sub(r'android:label="[^"]*"', 'android:label="নূরনামা"', s, count=1)
 open(mf, 'w', encoding='utf8').write(s)
 
@@ -75,6 +76,8 @@ for name in ['build.gradle.kts', 'build.gradle']:
     dep = ('coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")' if kts
            else "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'")
     g = re.sub(r'compileOptions\s*\{', lambda m: 'compileOptions {\n        ' + flag, g, count=1)
+    rel = '\n            isMinifyEnabled = false\n            isShrinkResources = false' if kts else '\n            minifyEnabled false\n            shrinkResources false'
+    g = re.sub(r'(buildTypes\s*\{\s*(?:getByName\("release"\)|release)\s*\{)', lambda m: m.group(1) + rel, g, count=1)
     if re.search(r'^dependencies\s*\{', g, re.M):
         g = re.sub(r'^(dependencies\s*\{)', lambda m: m.group(1) + '\n    ' + dep, g, count=1, flags=re.M)
     else:
