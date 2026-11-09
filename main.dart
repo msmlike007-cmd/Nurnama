@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:hijri/hijri_calendar.dart';
 import 'package:http/http.dart' as http;
@@ -362,20 +361,21 @@ class AppState extends ChangeNotifier {
 
   Future<String> _label(double la, double lo) async {
     try {
-      try {
-        await setLocaleIdentifier('bn_BD');
-      } catch (_) {}
-      final pm = await placemarkFromCoordinates(la, lo);
-      if (pm.isNotEmpty) {
-        final p = pm.first;
+      final r = await http
+          .get(Uri.parse('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&accept-language=bn&lat=$la&lon=$lo'),
+              headers: {'User-Agent': 'NurNama/2.0 (Android prayer times app)'})
+          .timeout(const Duration(seconds: 12));
+      if (r.statusCode == 200) {
+        final a = (jsonDecode(utf8.decode(r.bodyBytes))['address'] ?? {}) as Map;
         final parts = <String>[];
-        for (final x in [p.subLocality, p.locality, p.subAdministrativeArea]) {
-          final v = x?.trim() ?? '';
+        for (final k in ['suburb', 'neighbourhood', 'village', 'town', 'city', 'municipality', 'county', 'state_district']) {
+          final v = (a[k] ?? '').toString().trim();
           if (v.isNotEmpty && !parts.contains(v)) parts.add(v);
         }
-        final cn = p.country?.trim() ?? '';
-        if (cn.isNotEmpty && !inBdAt(la, lo)) parts.add(cn);
-        if (parts.isNotEmpty) return parts.take(3).join(', ');
+        final out = parts.take(3).toList();
+        final cn = (a['country'] ?? '').toString().trim();
+        if (cn.isNotEmpty && !inBdAt(la, lo)) out.add(cn);
+        if (out.isNotEmpty) return out.join(', ');
       }
     } catch (_) {}
     if (inBdAt(la, lo)) return nearest(la, lo).n;
@@ -650,7 +650,13 @@ class Logo extends StatelessWidget {
   final double size;
   const Logo({super.key, this.size = 48});
   @override
-  Widget build(BuildContext context) => SizedBox(width: size, height: size, child: CustomPaint(painter: _LogoPainter()));
+  Widget build(BuildContext context) => SizedBox(
+        width: size,
+        height: size,
+        child: ClipOval(
+          child: Image.asset('assets/logo.png', fit: BoxFit.cover, errorBuilder: (_, __, ___) => CustomPaint(painter: _LogoPainter())),
+        ),
+      );
 }
 
 class _LogoPainter extends CustomPainter {
