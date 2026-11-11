@@ -6,25 +6,29 @@ workflows:
     environment:
       flutter: stable
     scripts:
-      - name: Backup source files
+      - name: Check source files
         script: |
-          mkdir -p /tmp/src
+          ls -la
+          ls -la lib
           for f in main core notifications app_state home_page more_pages quran_dua settings_about; do
-            if [ -f "lib/$f.dart" ]; then
-              cp "lib/$f.dart" "/tmp/src/$f.dart"
-            else
+            if [ ! -f "lib/$f.dart" ]; then
               echo "MISSING: lib/$f.dart"
               exit 1
             fi
           done
-          ls -la /tmp/src
-      - name: Create Android project
-        script: flutter create --platforms=android --org com.masum --project-name nurnama .
-      - name: Restore source files
-        script: |
-          cp /tmp/src/*.dart lib/
-          ls -la lib
           head -8 lib/main.dart
+          if grep -q "MyHomePage" lib/main.dart; then
+            echo "ERROR: lib/main.dart is the default Flutter template, not your app"
+            exit 1
+          fi
+          if [ ! -f pubspec.yaml ]; then
+            echo "MISSING: pubspec.yaml in repo root"
+            exit 1
+          fi
+      - name: Create Android project
+        script: |
+          flutter create --platforms=android --org com.masum --project-name nurnama /tmp/proj
+          cp -r /tmp/proj/android ./android
       - name: Patch Android and make icon
         script: |
           pip3 install pillow || pip3 install --break-system-packages pillow
