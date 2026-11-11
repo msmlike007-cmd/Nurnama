@@ -6,12 +6,17 @@ workflows:
     environment:
       flutter: stable
     scripts:
-      - name: Prepare files
-        script: |
-          mkdir -p lib
-          if [ -f main.dart ]; then cp main.dart lib/main.dart; fi
       - name: Create Android project
         script: flutter create --platforms=android --org com.masum --project-name nurnama .
+      - name: Copy app source files
+        script: |
+          mkdir -p lib
+          for f in main core notifications app_state home_page more_pages quran_dua settings_about; do
+            if [ -f "$f.dart" ]; then cp "$f.dart" "lib/$f.dart"; 
+            elif [ -f "lib_split/$f.dart" ]; then cp "lib_split/$f.dart" "lib/$f.dart";
+            else echo "MISSING: $f.dart"; exit 1; fi
+          done
+          ls -la lib
       - name: Patch Android and make icon
         script: |
           pip3 install pillow || pip3 install --break-system-packages pillow
