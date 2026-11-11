@@ -12,10 +12,16 @@ workflows:
         script: |
           mkdir -p lib
           for f in main core notifications app_state home_page more_pages quran_dua settings_about; do
-            if [ -f "$f.dart" ]; then cp "$f.dart" "lib/$f.dart"; 
-            elif [ -f "lib_split/$f.dart" ]; then cp "lib_split/$f.dart" "lib/$f.dart";
-            else echo "MISSING: $f.dart"; exit 1; fi
+            if [ -f "$f.dart" ]; then
+              cp "$f.dart" "lib/$f.dart"
+            elif [ -f "lib_split/$f.dart" ]; then
+              cp "lib_split/$f.dart" "lib/$f.dart"
+            else
+              echo "MISSING: $f.dart"
+              exit 1
+            fi
           done
+          echo "=== lib files ==="
           ls -la lib
       - name: Patch Android and make icon
         script: |
@@ -25,6 +31,11 @@ workflows:
         script: flutter pub get
       - name: Launcher icons
         script: dart run flutter_launcher_icons
+      - name: Check main.dart
+        script: |
+          echo "=== main.dart check ==="
+          head -25 lib/main.dart
+          grep -n "fromSeed" lib/main.dart
       - name: Build APK
         script: |
           AZAN=false
