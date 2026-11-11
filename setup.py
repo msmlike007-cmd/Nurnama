@@ -1,4 +1,4 @@
-import os, re, math, shutil
+import os, re, math, shutil, base64
 from PIL import Image, ImageDraw
 
 # ---------- Logo ----------
@@ -141,6 +141,19 @@ for name in ['build.gradle.kts', 'build.gradle']:
     g = re.sub(r'compileOptions\s*\{', lambda m: 'compileOptions {\n        ' + flag, g, count=1)
     rel = '\n            isMinifyEnabled = false\n            isShrinkResources = false' if kts else '\n            minifyEnabled false\n            shrinkResources false'
     g = re.sub(r'(buildTypes\s*\{\s*(?:getByName\("release"\)|release)\s*\{)', lambda m: m.group(1) + rel, g, count=1)
+    if os.environ.get('KS_B64'):
+        open('android/app/nurnama.jks', 'wb').write(base64.b64decode(os.environ['KS_B64']))
+        if kts:
+            sc = ('signingConfigs {\n        create("release") {\n            storeFile = file("nurnama.jks")\n'
+                  '            storePassword = System.getenv("KS_PASS")\n            keyAlias = System.getenv("KS_ALIAS")\n'
+                  '            keyPassword = System.getenv("KS_PASS")\n        }\n    }\n')
+            g = g.replace('signingConfigs.getByName("debug")', 'signingConfigs.getByName("release")')
+        else:
+            sc = ("signingConfigs {\n        release {\n            storeFile file('nurnama.jks')\n"
+                  "            storePassword System.getenv('KS_PASS')\n            keyAlias System.getenv('KS_ALIAS')\n"
+                  "            keyPassword System.getenv('KS_PASS')\n        }\n    }\n")
+            g = g.replace('signingConfigs.debug', 'signingConfigs.release')
+        g = re.sub(r'android\s*\{', lambda m: m.group(0) + '\n    ' + sc, g, count=1)
     if re.search(r'^dependencies\s*\{', g, re.M):
         g = re.sub(r'^(dependencies\s*\{)', lambda m: m.group(1) + '\n    ' + dep, g, count=1, flags=re.M)
     else:

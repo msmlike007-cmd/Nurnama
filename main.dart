@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:adhan/adhan.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,8 @@ import 'package:url_launcher/url_launcher.dart';
 // ═════════════ Constants ═════════════
 const kApp = 'নূরনামা';
 const kAzan = bool.fromEnvironment('AZAN');
+const kVersion = '2.1.0';
+const kBuild = 3;
 const green = Color(0xFF0B3D2E);
 const green2 = Color(0xFF14604A);
 const gold = Color(0xFFD4AF37);
@@ -150,18 +153,21 @@ String fmt(DateTime t) {
 
 class Day {
   final List<DateTime> five; // ফজর, যোহর, আসর, মাগরিব, এশা
-  final DateTime sunrise, nextFajr;
-  Day(this.five, this.sunrise, this.nextFajr);
+  final DateTime sunrise, nextFajr, asrHanafi, asrShafi;
+  Day(this.five, this.sunrise, this.nextFajr, this.asrHanafi, this.asrShafi);
   DateTime get fajr => five[0];
   DateTime get sunset => five[3];
   DateTime endOf(int i) => i == 0 ? sunrise : i == 1 ? five[2] : i == 2 ? five[3] : i == 3 ? five[4] : nextFajr;
 }
 
 Day timesFor(DateTime d, AppState s) {
-  final t = PrayerTimes(s.c, DateComponents.from(d), s.params());
+  final comp = DateComponents.from(d);
+  final t = PrayerTimes(s.c, comp, s.params());
   final n = PrayerTimes(s.c, DateComponents.from(d.add(const Duration(days: 1))), s.params());
+  final ah = PrayerTimes(s.c, comp, s.params(hanafiOverride: true));
+  final asf = PrayerTimes(s.c, comp, s.params(hanafiOverride: false));
   DateTime l(DateTime x) => x.toLocal();
-  return Day([l(t.fajr), l(t.dhuhr), l(t.asr), l(t.maghrib), l(t.isha)], l(t.sunrise), l(n.fajr));
+  return Day([l(t.fajr), l(t.dhuhr), l(t.asr), l(t.maghrib), l(t.isha)], l(t.sunrise), l(n.fajr), l(ah.asr), l(asf.asr));
 }
 
 Future<void> openUrl(String u) async {
@@ -227,12 +233,38 @@ class Api {
 }
 
 // ═════════════ Notifications ═════════════
+@pragma('vm:entry-point')
+Future<void> notifBg(NotificationResponse r) async => handleNotifAction(r);
+
+Future<void> handleNotifAction(NotificationResponse r) async {
+  try {
+    final pl = r.payload ?? '';
+    if (r.actionId == 'prayed' && pl.startsWith('trk|')) {
+      final parts = pl.split('|');
+      final i = int.parse(parts[1]);
+      final k = parts[2];
+      final sp = await SharedPreferences.getInstance();
+      await sp.reload();
+      final cur = (sp.getString('trk_$k') ?? '00000').split('');
+      cur[i] = '1';
+      await sp.setString('trk_$k', cur.join());
+    }
+    if (r.id != null && (r.actionId == 'prayed' || r.actionId == 'later' || r.actionId == 'stop')) {
+      await Notif.p.cancel(r.id!);
+    }
+  } catch (_) {}
+}
+
 class Notif {
   static final p = FlutterLocalNotificationsPlugin();
 
   static Future<void> init() async {
     tzdata.initializeTimeZones();
-    await p.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
+    await p.initialize(
+      const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')),
+      onDidReceiveNotificationResponse: handleNotifAction,
+      onDidReceiveBackgroundNotificationResponse: notifBg,
+    );
   }
 
   static AndroidFlutterLocalNotificationsPlugin? get _a =>
@@ -244,34 +276,73 @@ class Notif {
 
   static Future<bool> enabled() async => (await _a?.areNotificationsEnabled()) ?? true;
 
+  static const _stop = AndroidNotificationAction('stop', 'বন্ধ করুন', cancelNotification: true, showsUserInterface: false);
+
+  static AndroidNotificationSound _alarmSound() =>
+      kAzan ? const RawResourceAndroidNotificationSound('azan') : const UriAndroidNotificationSound('content://settings/system/alarm_alert');
+
+  // আজান: স্পর্শ করলে বা সোয়াইপ করলে বন্ধ হয় না, শুধু "বন্ধ করুন" বাটনে বন্ধ হবে (৫ মিনিট পর নিজে সরে যাবে)
   static NotificationDetails azanDetails() => NotificationDetails(
         android: AndroidNotificationDetails(
-          kAzan ? 'azan_v2' : 'azan_alarm_v2',
+          kAzan ? 'azan_v3' : 'azan_alarm_v3',
           'আজান',
           channelDescription: 'নামাজের ওয়াক্তে আজান',
           importance: Importance.max,
           priority: Priority.max,
           playSound: true,
-          sound: kAzan
-              ? const RawResourceAndroidNotificationSound('azan')
-              : const UriAndroidNotificationSound('content://settings/system/alarm_alert'),
+          sound: _alarmSound(),
           audioAttributesUsage: AudioAttributesUsage.alarm,
           category: AndroidNotificationCategory.alarm,
           visibility: NotificationVisibility.public,
+          ongoing: true,
+          autoCancel: false,
+          timeoutAfter: 300000,
+          additionalFlags: kAzan ? null : Int32List.fromList(<int>[4]),
+          actions: const [_stop],
         ),
       );
 
-  static NotificationDetails remindDetails() => const NotificationDetails(
-        android: AndroidNotificationDetails('remind_v2', 'রিমাইন্ডার',
-            channelDescription: 'নামাজের রিমাইন্ডার', importance: Importance.high, priority: Priority.high),
+  static NotificationDetails customDetails() => NotificationDetails(
+        android: AndroidNotificationDetails(
+          'custom_alarm_v3',
+          'আমার অ্যালার্ম',
+          channelDescription: 'আপনার সেট করা অ্যালার্ম',
+          importance: Importance.max,
+          priority: Priority.max,
+          playSound: true,
+          sound: const UriAndroidNotificationSound('content://settings/system/alarm_alert'),
+          audioAttributesUsage: AudioAttributesUsage.alarm,
+          category: AndroidNotificationCategory.alarm,
+          ongoing: true,
+          autoCancel: false,
+          timeoutAfter: 300000,
+          additionalFlags: Int32List.fromList(<int>[4]),
+          actions: const [_stop],
+        ),
       );
 
-  static Future<bool> _at(int id, String title, String body, DateTime when, NotificationDetails d) async {
+  static NotificationDetails prayedDetails() => const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'remind_v3',
+          'নামাজ রিমাইন্ডার',
+          channelDescription: 'নামাজ পড়েছেন কিনা জানতে চাওয়া',
+          importance: Importance.high,
+          priority: Priority.high,
+          actions: [
+            AndroidNotificationAction('prayed', 'হ্যাঁ, পড়েছি', cancelNotification: true, showsUserInterface: false),
+            AndroidNotificationAction('later', 'পরে', cancelNotification: true, showsUserInterface: false),
+          ],
+        ),
+      );
+
+  static Future<bool> _at(int id, String title, String body, DateTime when, NotificationDetails d, {String? payload}) async {
     final z = tz.TZDateTime.from(when, tz.UTC);
     for (final mode in [AndroidScheduleMode.alarmClock, AndroidScheduleMode.exactAllowWhileIdle, AndroidScheduleMode.inexactAllowWhileIdle]) {
       try {
         await p.zonedSchedule(id, title, body, z, d,
-            androidScheduleMode: mode, uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime);
+            payload: payload,
+            androidScheduleMode: mode,
+            uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime);
         return true;
       } catch (_) {}
     }
@@ -283,15 +354,25 @@ class Notif {
     final now = DateTime.now();
     final base = dOnly(now);
     for (var d = 0; d < 10; d++) {
-      final t = timesFor(base.add(Duration(days: d)), s);
+      final day = base.add(Duration(days: d));
+      final t = timesFor(day, s);
       for (var i = 0; i < 5; i++) {
         if (s.on[i] && t.five[i].isAfter(now)) {
           await _at(100 + d * 10 + i, 'আজান - ${prayers[i]}', '${prayers[i]} নামাজের ওয়াক্ত হয়েছে', t.five[i], azanDetails());
         }
+        if (s.remind && s.name.isNotEmpty) {
+          final w = t.five[i].add(const Duration(minutes: 15));
+          if (w.isAfter(now)) {
+            await _at(6000 + d * 10 + i, 'নামাজের খোঁজ', '${s.addr}, ${prayers[i]} নামাজ পড়েছেন তো?', w, prayedDetails(),
+                payload: 'trk|$i|${dateKey(day)}');
+          }
+        }
       }
-      if (s.remind && s.name.isNotEmpty) {
-        final w = t.fajr.add(const Duration(minutes: 20));
-        if (w.isAfter(now)) await _at(5000 + d, 'নামাজ', '${s.addr}, আপনি আজকে নামাজ পড়েছেন তো?', w, remindDetails());
+      for (var c = 0; c < s.customs.length; c++) {
+        final a = s.customs[c];
+        if (a['on'] != true) continue;
+        final w = DateTime(day.year, day.month, day.day, a['h'] as int, a['m'] as int);
+        if (w.isAfter(now)) await _at(8000 + c * 10 + d, '${a['l']}', 'আপনার অ্যালার্ম', w, customDetails());
       }
     }
   }
@@ -308,12 +389,14 @@ class AppState extends ChangeNotifier {
   bool hanafi = true, remind = true, loaded = false;
   String method = 'auto', name = '', title = 'ভাই', note = '', lastPopup = '';
   double arSize = 26;
+  List<Map<String, dynamic>> customs = [];
+  Map<String, dynamic>? update;
   late SharedPreferences sp;
 
   Coordinates get c => Coordinates(lat, lon);
   String get addr => title.isEmpty ? name : '$name $title';
 
-  CalculationParameters params() {
+  CalculationParameters params({bool? hanafiOverride}) {
     CalculationMethod m;
     switch (method) {
       case 'karachi':
@@ -332,7 +415,7 @@ class AppState extends ChangeNotifier {
         m = inBdAt(lat, lon) ? CalculationMethod.karachi : CalculationMethod.muslim_world_league;
     }
     final p = m.getParameters();
-    p.madhab = hanafi ? Madhab.hanafi : Madhab.shafi;
+    p.madhab = (hanafiOverride ?? hanafi) ? Madhab.hanafi : Madhab.shafi;
     return p;
   }
 
@@ -347,6 +430,12 @@ class AppState extends ChangeNotifier {
     title = sp.getString('title') ?? 'ভাই';
     lastPopup = sp.getString('popup') ?? '';
     arSize = sp.getDouble('arSize') ?? 26;
+    final cj = sp.getString('customs');
+    if (cj != null) {
+      try {
+        customs = (jsonDecode(cj) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
     final s = sp.getString('on');
     if (s != null && s.length == 5) on = s.split('').map((e) => e == '1').toList();
     if (sp.containsKey('lat')) {
@@ -478,6 +567,48 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> refresh() async {
+    if (!loaded) return;
+    await sp.reload();
+    notifyListeners();
+  }
+
+  Future<void> _saveCustoms() async {
+    await sp.setString('customs', jsonEncode(customs));
+    notifyListeners();
+    await resched();
+  }
+
+  Future<void> addCustom(String label, int h, int m) async {
+    if (customs.length >= 10) return;
+    customs.add({'l': label, 'h': h, 'm': m, 'on': true});
+    await _saveCustoms();
+  }
+
+  Future<void> toggleCustom(int i) async {
+    customs[i]['on'] = !(customs[i]['on'] == true);
+    await _saveCustoms();
+  }
+
+  Future<void> delCustom(int i) async {
+    customs.removeAt(i);
+    await _saveCustoms();
+  }
+
+  Future<void> checkUpdate() async {
+    try {
+      final r = await http
+          .get(Uri.parse('https://raw.githubusercontent.com/msmlike007-cmd/Nurnama/main/version.json'))
+          .timeout(const Duration(seconds: 10));
+      if (r.statusCode != 200) return;
+      final j = jsonDecode(utf8.decode(r.bodyBytes)) as Map<String, dynamic>;
+      if ((j['build'] as num) > kBuild) {
+        update = j;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
   List<bool> trk(DateTime d) => (sp.getString('trk_${dateKey(d)}') ?? '00000').split('').map((e) => e == '1').toList();
 
   Future<void> setTrk(DateTime d, int i, bool v) async {
@@ -585,19 +716,26 @@ class Shell extends StatefulWidget {
   State<Shell> createState() => _ShellState();
 }
 
-class _ShellState extends State<Shell> {
+class _ShellState extends State<Shell> with WidgetsBindingObserver {
   int i = 0;
   bool _boot = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.s.addListener(_maybeBoot);
     _maybeBoot();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) widget.s.refresh();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.s.removeListener(_maybeBoot);
     super.dispose();
   }
@@ -614,6 +752,7 @@ class _ShellState extends State<Shell> {
     if (s.name.isEmpty) await askName(context, s);
     await Notif.ask();
     await s.resched();
+    s.checkUpdate();
     if (!mounted) return;
     final en = await Notif.enabled();
     final k = dateKey(now0());
@@ -770,6 +909,18 @@ class _HomeState extends State<HomePage> {
         ]),
       ),
       if (s.note.isNotEmpty) Card(color: Colors.orange.shade100, child: Padding(padding: const EdgeInsets.all(12), child: Text(s.note, style: const TextStyle(color: Colors.black87)))),
+      if (s.update != null)
+        Card(
+          color: gold.withOpacity(.2),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('নতুন আপডেট এসেছে: ${s.update!['version']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+              if ((s.update!['notes'] ?? '').toString().isNotEmpty) Text('${s.update!['notes']}'),
+              TextButton.icon(onPressed: () => openUrl('${s.update!['url']}'), icon: const Icon(Icons.download), label: const Text('ডাউনলোড করুন')),
+            ]),
+          ),
+        ),
       const SizedBox(height: 10),
       Row(children: [
         chip(context, Icons.wb_twilight, 'সূর্যোদয়', fmt(tt.sunrise)),
@@ -798,7 +949,9 @@ class _HomeState extends State<HomePage> {
               tileColor: i == ni ? gold.withOpacity(.15) : null,
               leading: Icon(prayerIcons[i], color: pri(context)),
               title: Text(prayers[i], style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-              subtitle: Text('শুরু ${fmt(tt.five[i])}  •  শেষ ${fmt(tt.endOf(i))}'),
+              subtitle: Text(i == 2
+                  ? 'শুরু: হানাফি ${fmt(tt.asrHanafi)} • আহলে হাদিস ${fmt(tt.asrShafi)}\nশেষ ${fmt(tt.endOf(i))}'
+                  : 'শুরু ${fmt(tt.five[i])}  •  শেষ ${fmt(tt.endOf(i))}'),
               trailing: IconButton(
                 tooltip: 'আজান অ্যালার্ম',
                 icon: Icon(s.on[i] ? Icons.notifications_active : Icons.notifications_off, color: s.on[i] ? pri(context) : Colors.grey),
@@ -809,7 +962,7 @@ class _HomeState extends State<HomePage> {
       ),
       Padding(
         padding: const EdgeInsets.all(12),
-        child: Text('গণনা: ${s.method == 'auto' ? (inBdAt(s.lat, s.lon) ? 'করাচি' : 'মুসলিম ওয়ার্ল্ড লীগ') : s.method} পদ্ধতি, ${s.hanafi ? 'হানাফি' : 'শাফেয়ি'} আসর। স্থানীয় ক্যালেন্ডারের সাথে ১-২ মিনিট পার্থক্য হতে পারে।',
+        child: Text('গণনা: ${s.method == 'auto' ? (inBdAt(s.lat, s.lon) ? 'করাচি' : 'মুসলিম ওয়ার্ল্ড লীগ') : s.method} পদ্ধতি, আসর: হানাফি ও আহলে হাদিস/জমহুর দুই সময়ই দেখানো হয় (অ্যালার্ম ও যোহরের শেষ সময় ${s.hanafi ? 'হানাফি' : 'আহলে হাদিস'} অনুযায়ী)। স্থানীয় ক্যালেন্ডারের সাথে ১-২ মিনিট পার্থক্য হতে পারে।',
             style: TextStyle(fontSize: 12, color: mute(context))),
       ),
     ]);
@@ -919,6 +1072,7 @@ class MorePage extends StatelessWidget {
       [Icons.event, 'ইসলামি দিবস', () => openPage(context, 'গুরুত্বপূর্ণ ইসলামি দিন', DaysPage(s))],
       [Icons.explore, 'কিবলা', () => openPage(context, 'কিবলা কম্পাস', QiblaPage(s))],
       [Icons.touch_app, 'তসবিহ', () => openPage(context, 'তসবিহ', TasbihPage(s))],
+      [Icons.alarm_add, 'আমার অ্যালার্ম', () => openPage(context, 'আমার অ্যালার্ম', CustomAlarmPage(s))],
       [Icons.checklist, 'নামাজ ট্র্যাকার', () => openPage(context, 'নামাজ ট্র্যাকার', TrackerPage(s))],
       [Icons.favorite, 'দোয়া', () => openPage(context, 'কুরআনের দোয়া', DuaPage(s))],
       [Icons.shield, 'রুকইয়াহ', () => openPage(context, 'রুকইয়াহ', RuqyahPage(s))],
@@ -1164,18 +1318,32 @@ class TasbihPage extends StatefulWidget {
 }
 
 class _TasbihState extends State<TasbihPage> {
-  int count = 0, target = 33;
+  static const fNames = ['সুবহানাল্লাহ', 'আলহামদুলিল্লাহ', 'আল্লাহু আকবার'];
+  static const fTargets = [33, 33, 34];
+  int count = 0, target = 33, stage = 0;
+  bool fatimi = true, done = false;
   String dhikr = 'সুবহানাল্লাহ';
 
-  @override
-  void initState() {
-    super.initState();
-    count = widget.s.sp.getInt('tasbih') ?? 0;
-  }
-
   void tap() {
+    if (fatimi) {
+      if (done) return;
+      setState(() => count++);
+      if (count >= fTargets[stage]) {
+        HapticFeedback.heavyImpact();
+        if (stage == 2) {
+          setState(() => done = true);
+        } else {
+          setState(() {
+            stage++;
+            count = 0;
+          });
+        }
+      } else {
+        HapticFeedback.lightImpact();
+      }
+      return;
+    }
     setState(() => count++);
-    widget.s.sp.setInt('tasbih', count);
     if (target > 0 && count % target == 0) {
       HapticFeedback.heavyImpact();
     } else {
@@ -1183,20 +1351,43 @@ class _TasbihState extends State<TasbihPage> {
     }
   }
 
+  void reset() => setState(() {
+        count = 0;
+        stage = 0;
+        done = false;
+      });
+
   @override
   Widget build(BuildContext context) {
+    final name = fatimi ? fNames[stage] : dhikr;
+    final tgt = fatimi ? fTargets[stage] : target;
     return ListView(padding: const EdgeInsets.all(16), children: [
-      Wrap(spacing: 8, runSpacing: 4, alignment: WrapAlignment.center, children: [
-        for (final d in ['সুবহানাল্লাহ', 'আলহামদুলিল্লাহ', 'আল্লাহু আকবার', 'লা ইলাহা ইল্লাল্লাহ', 'আস্তাগফিরুল্লাহ'])
-          ChoiceChip(label: Text(d), selected: dhikr == d, onSelected: (_) => setState(() => dhikr = d)),
-      ]),
+      Center(
+        child: SegmentedButton<bool>(
+          segments: const [ButtonSegment(value: true, label: Text('৩৩-৩৩-৩৪')), ButtonSegment(value: false, label: Text('নিজের মতো'))],
+          selected: {fatimi},
+          onSelectionChanged: (v) {
+            fatimi = v.first;
+            reset();
+          },
+        ),
+      ),
       const SizedBox(height: 10),
-      Wrap(spacing: 8, alignment: WrapAlignment.center, children: [
-        for (final t in [33, 99, 100, 0])
-          ChoiceChip(label: Text(t == 0 ? 'সীমাহীন' : bn(t)), selected: target == t, onSelected: (_) => setState(() => target = t)),
-      ]),
-      const SizedBox(height: 24),
-      Center(child: Text(dhikr, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600, color: gold))),
+      if (!fatimi) ...[
+        Wrap(spacing: 8, runSpacing: 4, alignment: WrapAlignment.center, children: [
+          for (final d in ['সুবহানাল্লাহ', 'আলহামদুলিল্লাহ', 'আল্লাহু আকবার', 'লা ইলাহা ইল্লাল্লাহ', 'আস্তাগফিরুল্লাহ'])
+            ChoiceChip(label: Text(d), selected: dhikr == d, onSelected: (_) => setState(() => dhikr = d)),
+        ]),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, alignment: WrapAlignment.center, children: [
+          for (final t in [33, 99, 100, 0])
+            ChoiceChip(label: Text(t == 0 ? 'সীমাহীন' : bn(t)), selected: target == t, onSelected: (_) => setState(() => target = t)),
+        ]),
+      ],
+      if (fatimi)
+        Center(child: Text('ধাপ ${bn(stage + 1)}/${bn(3)}', style: TextStyle(color: mute(context)))),
+      const SizedBox(height: 18),
+      Center(child: Text(done ? 'আলহামদুলিল্লাহ, তাসবিহ পূর্ণ হয়েছে' : name, textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600, color: gold))),
       const SizedBox(height: 14),
       Center(
         child: GestureDetector(
@@ -1204,27 +1395,20 @@ class _TasbihState extends State<TasbihPage> {
           child: Container(
             width: 220,
             height: 220,
-            decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [green2, green], begin: Alignment.topLeft, end: Alignment.bottomRight)),
+            decoration: BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: done ? [Colors.green, green2] : [green2, green], begin: Alignment.topLeft, end: Alignment.bottomRight)),
             child: Center(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Text(bn(count), style: const TextStyle(color: Colors.white, fontSize: 56, fontWeight: FontWeight.w700)),
-                if (target > 0) Text('/ ${bn(target)}', style: const TextStyle(color: gold, fontSize: 18)),
-              ]),
+              child: done
+                  ? const Icon(Icons.check, color: Colors.white, size: 90)
+                  : Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(bn(count), style: const TextStyle(color: Colors.white, fontSize: 56, fontWeight: FontWeight.w700)),
+                      if (tgt > 0) Text('/ ${bn(tgt)}', style: const TextStyle(color: gold, fontSize: 18)),
+                    ]),
             ),
           ),
         ),
       ),
       const SizedBox(height: 20),
-      Center(
-        child: OutlinedButton.icon(
-          onPressed: () {
-            setState(() => count = 0);
-            widget.s.sp.setInt('tasbih', 0);
-          },
-          icon: const Icon(Icons.refresh),
-          label: const Text('শূন্য করুন'),
-        ),
-      ),
+      Center(child: OutlinedButton.icon(onPressed: reset, icon: const Icon(Icons.refresh), label: const Text('শূন্য করুন'))),
     ]);
   }
 }
@@ -1242,6 +1426,19 @@ class TrackerPage extends StatelessWidget {
         final today = dOnly(now0());
         final t = s.trk(today);
         final done = t.where((e) => e).length;
+        var streak = 0;
+        var d = today;
+        if (!s.trk(d).every((e) => e)) d = d.subtract(const Duration(days: 1));
+        while (streak < 400 && s.trk(d).every((e) => e)) {
+          streak++;
+          d = d.subtract(const Duration(days: 1));
+        }
+        var monthDone = 0;
+        for (var k = 1; k <= today.day; k++) {
+          monthDone += s.trk(DateTime(today.year, today.month, k)).where((e) => e).length;
+        }
+        final monthTotal = today.day * 5;
+        final pct = monthTotal == 0 ? 0 : (monthDone * 100 / monthTotal).round();
         return ListView(padding: const EdgeInsets.all(12), children: [
           Card(
             child: Padding(
@@ -1251,31 +1448,55 @@ class TrackerPage extends StatelessWidget {
                 const SizedBox(height: 4),
                 LinearProgressIndicator(value: done / 5, minHeight: 8),
                 for (var i = 0; i < 5; i++)
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(prayers[i]),
-                    value: t[i],
-                    onChanged: (v) => s.setTrk(today, i, v ?? false),
-                  ),
+                  CheckboxListTile(contentPadding: EdgeInsets.zero, title: Text(prayers[i]), value: t[i], onChanged: (v) => s.setTrk(today, i, v ?? false)),
               ]),
             ),
           ),
+          Row(children: [
+            Expanded(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(children: [
+                    Text('${bn(streak)} দিন', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: gold)),
+                    const Text('টানা ৫ ওয়াক্ত', style: TextStyle(fontSize: 12)),
+                  ]),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(children: [
+                    Text('${bn(monthDone)}/${bn(monthTotal)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: gold)),
+                    Text('এই মাসে (${bn(pct)}%)', style: const TextStyle(fontSize: 12)),
+                  ]),
+                ),
+              ),
+            ),
+          ]),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Column(children: [
-                const Align(alignment: Alignment.centerLeft, child: Text('গত ৭ দিন', style: TextStyle(fontWeight: FontWeight.w700))),
+                const Align(alignment: Alignment.centerLeft, child: Text('গত ৭ দিন (ট্যাপ করে বদলানো যায়)', style: TextStyle(fontWeight: FontWeight.w700))),
                 const SizedBox(height: 8),
                 for (var k = 0; k < 7; k++)
                   Builder(builder: (_) {
-                    final d = today.subtract(Duration(days: k));
-                    final x = s.trk(d);
+                    final day = today.subtract(Duration(days: k));
+                    final x = s.trk(day);
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 3),
                       child: Row(children: [
-                        SizedBox(width: 90, child: Text(k == 0 ? 'আজ' : wdBn[d.weekday % 7], style: const TextStyle(fontSize: 13))),
+                        SizedBox(width: 90, child: Text(k == 0 ? 'আজ' : wdBn[day.weekday % 7], style: const TextStyle(fontSize: 13))),
                         for (var i = 0; i < 5; i++)
-                          Expanded(child: Icon(x[i] ? Icons.check_circle : Icons.circle_outlined, size: 22, color: x[i] ? Colors.green : Colors.grey)),
+                          Expanded(
+                            child: InkWell(
+                              onTap: () => s.setTrk(day, i, !x[i]),
+                              child: Icon(x[i] ? Icons.check_circle : Icons.circle_outlined, size: 24, color: x[i] ? Colors.green : Colors.grey),
+                            ),
+                          ),
                       ]),
                     );
                   }),
@@ -1286,8 +1507,61 @@ class TrackerPage extends StatelessWidget {
               ]),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Text('প্রতি ওয়াক্তের ১৫ মিনিট পর নোটিফিকেশন আসে, সেখান থেকেই "হ্যাঁ, পড়েছি" চাপলে এখানে টিক পড়ে যায়।', style: TextStyle(fontSize: 12, color: mute(context))),
+          ),
         ]);
       },
+    );
+  }
+}
+
+// ═════════════ Custom alarms ═════════════
+class CustomAlarmPage extends StatelessWidget {
+  final AppState s;
+  const CustomAlarmPage(this.s, {super.key});
+
+  Future<void> add(BuildContext context) async {
+    final tm = await showTimePicker(context: context, initialTime: const TimeOfDay(hour: 4, minute: 0));
+    if (tm == null || !context.mounted) return;
+    final c = TextEditingController(text: 'নামাজের অ্যালার্ম');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('অ্যালার্মের নাম'),
+        content: TextField(controller: c, decoration: const InputDecoration(hintText: 'যেমন: তাহাজ্জুদ, ইশরাক, চাশত')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('বাতিল')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('সংরক্ষণ')),
+        ],
+      ),
+    );
+    if (ok == true) await s.addCustom(c.text.trim().isEmpty ? 'অ্যালার্ম' : c.text.trim(), tm.hour, tm.minute);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: s,
+      builder: (_, __) => ListView(padding: const EdgeInsets.all(12), children: [
+        FilledButton.icon(onPressed: () => add(context), icon: const Icon(Icons.add_alarm), label: const Text('নতুন অ্যালার্ম যোগ করুন')),
+        const SizedBox(height: 8),
+        if (s.customs.isEmpty)
+          Padding(padding: const EdgeInsets.all(20), child: Text('কোনো অ্যালার্ম নেই। তাহাজ্জুদ, ইশরাক, চাশত বা যেকোনো নামাজের জন্য নিজের সময়ে অ্যালার্ম সেট করুন। অ্যালার্ম প্রতিদিন বাজবে এবং "বন্ধ করুন" চাপলে থামবে।', style: TextStyle(color: mute(context)))),
+        for (var i = 0; i < s.customs.length; i++)
+          Card(
+            child: ListTile(
+              leading: Icon(Icons.alarm, color: pri(context)),
+              title: Text('${s.customs[i]['l']}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(fmt(DateTime(2000, 1, 1, s.customs[i]['h'] as int, s.customs[i]['m'] as int))),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                Switch(value: s.customs[i]['on'] == true, onChanged: (_) => s.toggleCustom(i)),
+                IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => s.delCustom(i)),
+              ]),
+            ),
+          ),
+      ]),
     );
   }
 }
@@ -1595,7 +1869,7 @@ class SetPage extends StatelessWidget {
             ],
             onChanged: (v) => s.setMethod(v ?? 'auto'),
           ),
-          SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('আসর: হানাফি মাজহাব'), value: s.hanafi, onChanged: s.setHanafi),
+          SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('আসরের অ্যালার্ম: হানাফি সময়ে'), subtitle: const Text('বন্ধ করলে আহলে হাদিস/জমহুর সময়ে বাজবে'), value: s.hanafi, onChanged: s.setHanafi),
           Row(children: [
             const Expanded(child: Text('হিজরি তারিখ সমন্বয় (দিন)')),
             IconButton(onPressed: () => s.setAdj(s.adj - 1), icon: const Icon(Icons.remove_circle_outline)),
@@ -1605,7 +1879,7 @@ class SetPage extends StatelessWidget {
         ]),
         sec('আজান ও রিমাইন্ডার', [
           Text(kAzan ? 'আজানের শব্দ: অ্যাপে যুক্ত' : 'আজানের শব্দ: ফোনের অ্যালার্ম সাউন্ড (azan.mp3 যুক্ত করে বিল্ড করলে আজান বাজবে)', style: const TextStyle(fontSize: 13)),
-          SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('ফজরের পর "নামাজ পড়েছেন তো?" রিমাইন্ডার'), value: s.remind, onChanged: s.setRemind),
+          SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('প্রতি ওয়াক্তের ১৫ মিনিট পর "নামাজ পড়েছেন তো?"'), value: s.remind, onChanged: s.setRemind),
           Wrap(spacing: 8, children: [
             OutlinedButton(
               onPressed: () async {
@@ -1662,7 +1936,7 @@ class AboutPage extends StatelessWidget {
       const Center(child: Logo(size: 96)),
       const SizedBox(height: 10),
       const Center(child: Text(kApp, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: gold))),
-      const Center(child: Text('সংস্করণ ২.০.০')),
+      Center(child: Text('সংস্করণ ${bn(kVersion)}')),
       const SizedBox(height: 20),
       Container(
         padding: const EdgeInsets.all(20),
@@ -1682,6 +1956,11 @@ class AboutPage extends StatelessWidget {
         ]),
       ),
       const SizedBox(height: 16),
+      Center(child: OutlinedButton.icon(onPressed: () async {
+        await s.checkUpdate();
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.update != null ? 'নতুন আপডেট পাওয়া গেছে, নামাজ পেজে দেখুন' : 'আপনার অ্যাপ সর্বশেষ সংস্করণে আছে')));
+      }, icon: const Icon(Icons.system_update), label: const Text('আপডেট খুঁজুন'))),
+      const SizedBox(height: 10),
       Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
