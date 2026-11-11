@@ -6,23 +6,25 @@ workflows:
     environment:
       flutter: stable
     scripts:
-      - name: Create Android project
-        script: flutter create --platforms=android --org com.masum --project-name nurnama .
-      - name: Copy app source files
+      - name: Backup source files
         script: |
-          mkdir -p lib
+          mkdir -p /tmp/src
           for f in main core notifications app_state home_page more_pages quran_dua settings_about; do
-            if [ -f "$f.dart" ]; then
-              cp "$f.dart" "lib/$f.dart"
-            elif [ -f "lib_split/$f.dart" ]; then
-              cp "lib_split/$f.dart" "lib/$f.dart"
+            if [ -f "lib/$f.dart" ]; then
+              cp "lib/$f.dart" "/tmp/src/$f.dart"
             else
-              echo "MISSING: $f.dart"
+              echo "MISSING: lib/$f.dart"
               exit 1
             fi
           done
-          echo "=== lib files ==="
+          ls -la /tmp/src
+      - name: Create Android project
+        script: flutter create --platforms=android --org com.masum --project-name nurnama .
+      - name: Restore source files
+        script: |
+          cp /tmp/src/*.dart lib/
           ls -la lib
+          head -8 lib/main.dart
       - name: Patch Android and make icon
         script: |
           pip3 install pillow || pip3 install --break-system-packages pillow
@@ -31,11 +33,6 @@ workflows:
         script: flutter pub get
       - name: Launcher icons
         script: dart run flutter_launcher_icons
-      - name: Check main.dart
-        script: |
-          echo "=== main.dart check ==="
-          head -25 lib/main.dart
-          grep -n "fromSeed" lib/main.dart
       - name: Build APK
         script: |
           AZAN=false
