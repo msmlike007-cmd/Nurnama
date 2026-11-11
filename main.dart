@@ -102,7 +102,6 @@ class BnDate {
   BnDate(this.y, this.m, this.d);
 }
 
-/// বাংলাদেশের সংশোধিত বাংলা সন (১৪ এপ্রিল = ১ বৈশাখ)
 BnDate toBangla(DateTime g) {
   final day = DateTime.utc(g.year, g.month, g.day);
   var gy = g.year;
@@ -123,15 +122,8 @@ BnDate toBangla(DateTime g) {
 
 HijriCalendar hijri(DateTime g, int adj) => HijriCalendar.fromDate(dOnly(g).add(Duration(days: adj)));
 
-/// হিজরি → গ্রেগরিয়ান (কুয়েতি অ্যালগরিদম, নির্ভরযোগ্য)
 DateTime hijriToG(int y, int m, int d, int adj) {
-  final jd = (11 * y + 3) ~/ 30 +
-      354 * y +
-      30 * m -
-      (m - 1) ~/ 2 +
-      d +
-      1948440 -
-      385;
+  final jd = (11 * y + 3) ~/ 30 + 354 * y + 30 * m - (m - 1) ~/ 2 + d + 1948440 - 385;
   final l = jd + 68569;
   final n = (4 * l) ~/ 146097;
   final l2 = l - (146097 * n + 3) ~/ 4;
@@ -492,4 +484,6 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      v
+      var p = await Geolocator.checkPermission();
+      if (p == LocationPermission.denied) p = await Geolocator.requestPermission();
+      if (p == Locati
